@@ -1,4 +1,3 @@
-```yaml
 name: Backend to EC2
 
 on:
@@ -229,4 +228,4 @@ jobs:
             Workflow: ${{ github.workflow }}
 
             Check the GitHub Actions run for individual step results.
-```
+

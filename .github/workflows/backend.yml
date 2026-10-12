@@ -1,10 +1,10 @@
 name: Backend to EC2
 
 on:
-  workflow_dispatch:
   # push:
   #   branches:
   #     - main
+  workflow_dispatch:
 
 jobs:
   build-deploy:
@@ -18,9 +18,9 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: 17
           cache: maven
-
+      
       - name: Build and SonarQube Scan
         working-directory: backend
         env:
@@ -31,9 +31,9 @@ jobs:
             -DskipTests \
             -Dsonar.projectKey=backend \
             -Dsonar.projectName=backend \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.token="$SONAR_TOKEN"
-
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.token=$SONAR_TOKEN
+      
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
         with:
@@ -48,47 +48,31 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
           script: |
             set -e
             sudo yum install -y git maven java-17-amazon-corretto
-            java -version
-            mvn -version
-            git --version
 
-      - name: Clone or Update Repository
+      - name: Clone / Pull Repository
         uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
           script: |
             set -e
-
             APP_DIR=/home/ec2-user/app
             REPO_NAME=Java-springboot-project
             REPO_URL=https://github.com/SamruddhiSKhutale/java-maven-project.git
-
-            mkdir -p "$APP_DIR"
-            cd "$APP_DIR"
-
+            mkdir -p $APP_DIR
+            cd $APP_DIR
             if [ -d "$REPO_NAME/.git" ]; then
-              cd "$REPO_NAME"
-              git fetch origin
-              git reset --hard origin/main
+              cd $REPO_NAME
+              git reset --hard
+              git pull origin main
             else
-              git clone "$REPO_URL" "$REPO_NAME"
-              cd "$REPO_NAME"
+              git clone $REPO_URL
+              cd $REPO_NAME
             fi
-
-            echo "Repository directory:"
-            pwd
-
-            echo "Repository files:"
-            ls -la
-
-            test -d backend
 
       - name: Build Maven Application
         uses: appleboy/ssh-action@v1.1.0
@@ -96,19 +80,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
           script: |
-            set -e
-
             cd /home/ec2-user/app/Java-springboot-project/backend
-
-            java -version
             mvn clean package -DskipTests -U
-
-            echo "Generated JAR files:"
-            ls -lh target/*.jar
-
-            test -f target/datastore-0.0.7.jar
 
       - name: Stop Old Application
         uses: appleboy/ssh-action@v1.1.0
@@ -116,31 +90,25 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
+          script_stop: false
           script: |
-            set -e
-
-            PID=$(pgrep -f '^java .*datastore-0\.0\.7\.jar' || true)
-
+            PID=$(ps -ef | grep '[d]atastore-0.0.7.jar' | awk '{print $2}')
+      
             if [ -z "$PID" ]; then
               echo "Application is not running."
               exit 0
             fi
-
-            echo "Stopping application PID: $PID"
-
+      
+            echo "Stopping PID: $PID"
             kill -15 $PID
-
-            for i in {1..10}; do
-              if ! kill -0 "$PID" 2>/dev/null; then
-                echo "Application stopped successfully."
-                exit 0
-              fi
-              sleep 2
-            done
-
-            echo "Application did not stop gracefully. Force stopping."
-            kill -9 "$PID" || true
+            sleep 5
+      
+            if ps -p $PID > /dev/null 2>&1; then
+              echo "Force killing PID: $PID"
+              kill -9 $PID
+            fi
+      
+            echo "Application stopped."
 
       - name: Start Application
         uses: appleboy/ssh-action@v1.1.0
@@ -148,32 +116,27 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
           script: |
-            set -e
-
             LOG_DIR=/var/log/app
-            APP_DIR=/home/ec2-user/app/Java-springboot-project/backend/target
-            JAR_FILE=datastore-0.0.7.jar
-
-            sudo mkdir -p "$LOG_DIR"
-            sudo chown ec2-user:ec2-user "$LOG_DIR"
-
-            cd "$APP_DIR"
-
-            test -f "$JAR_FILE"
-
+            sudo mkdir -p $LOG_DIR
+            sudo chown ec2-user:ec2-user $LOG_DIR
+            cd /home/ec2-user/app/Java-springboot-project/backend/target
             nohup env \
-              MYSQL_HOST='${{ secrets.DB_HOST }}' \
+              MYSQL_HOST=${{ secrets.DB_HOST }} \
               MYSQL_PORT=3306 \
-              MYSQL_USERNAME='${{ secrets.DB_USERNAME }}' \
-              MYSQL_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-              LOG_FILE_PATH="$LOG_DIR/datastore.log" \
-              java -jar "$JAR_FILE" --server.port=8084 \
-              > "$LOG_DIR/nohup.out" 2>&1 < /dev/null &
+              MYSQL_USERNAME=${{ secrets.DB_USERNAME }} \
+              MYSQL_PASSWORD=${{ secrets.DB_PASSWORD }} \
+              LOG_FILE_PATH=$LOG_DIR/datastore.log \
+              java -jar datastore-0.0.7.jar --server.port=8084 \
+              > $LOG_DIR/nohup.out 2>&1 &
 
-            echo "Application startup initiated."
-            echo "Application PID: $!"
+      - name: Wait for App Startup
+        uses: appleboy/ssh-action@v1.1.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_KEY }}
+          script: sleep 15
 
       - name: Verify Application
         uses: appleboy/ssh-action@v1.1.0
@@ -181,29 +144,10 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          port: 22
           script: |
-            set -e
-
-            for i in {1..12}; do
-              RESPONSE=$(curl -sS --max-time 5 \
-                http://localhost:8084/actuator/health || true)
-
-              echo "Health check attempt $i: $RESPONSE"
-
-              if echo "$RESPONSE" | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-                echo "Application is healthy."
-                exit 0
-              fi
-
-              sleep 5
-            done
-
-            echo "Application health check failed."
-            echo "Application logs:"
-            tail -n 100 /var/log/app/nohup.out || true
-
-            exit 1
+            HEALTH=$(curl -s http://localhost:8084/actuator/health)
+            echo "$HEALTH"
+            [[ "$HEALTH" == *'"status":"UP"'* ]]
 
       - name: Send Deployment Report
         if: always()
@@ -218,14 +162,11 @@ jobs:
           to: ${{ secrets.EMAIL_TO }}
           from: ${{ secrets.EMAIL_USERNAME }}
           body: |
-            Backend Deployment Report
-
             Repository: ${{ github.repository }}
             Branch: ${{ github.ref_name }}
             Commit: ${{ github.sha }}
-            Workflow Status: ${{ job.status }}
-            Triggered By: ${{ github.actor }}
+            Status: ${{ job.status }}
+            Actor: ${{ github.actor }}
             Workflow: ${{ github.workflow }}
-
-            Check the GitHub Actions run for individual step results.
-
+            SonarQube: Completed
+            Quality Gate: Passed if workflow succeeded
